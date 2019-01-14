@@ -419,5 +419,9 @@ namespace Microsoft.Cci.Pdb {
       //Array.Sort(funcs, PdbFunction.byToken);
       return funcs;
     }
-  }
+
+        private class Guid2
+        {
+        }
+    }
 }

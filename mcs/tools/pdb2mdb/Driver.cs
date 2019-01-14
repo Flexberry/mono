@@ -19,29 +19,39 @@ using Mono.Cecil;
 
 using Mono.CompilerServices.SymbolWriter;
 
-namespace Pdb2Mdb {
+namespace MdbConverter {
 
 	public class Converter {
 
 		MonoSymbolWriter mdb;
-		Dictionary<string, SourceFile> files = new Dictionary<string, SourceFile> ();
+        string windowsRootFolder;
+        string linuxRootFolder;
 
-		public static void Convert (string filename)
+        Dictionary<string, SourceFile> files = new Dictionary<string, SourceFile> ();
+
+		public static void Convert (string pdb, string windowsRootFolder, string linuxRootFolder)
 		{
-			using (var asm = AssemblyDefinition.ReadAssembly (filename)) {
+            string filenameWithoutExtension = Path.GetFileNameWithoutExtension(pdb);
+            string filename = Path.Combine(Path.GetDirectoryName(pdb), $"{filenameWithoutExtension}.dll");
 
-				var pdb = asm.Name.Name + ".pdb";
-				pdb = Path.Combine (Path.GetDirectoryName (filename), pdb);
+            if (!File.Exists(filename))
+            {
+                filename = Path.Combine(Path.GetDirectoryName(pdb), $"{filenameWithoutExtension}.exe");
+            }
 
-				if (!File.Exists (pdb))
-					throw new FileNotFoundException ("PDB file doesn't exist: " + pdb);
+            if (!File.Exists(filename))
+            {
+                throw new FileNotFoundException("Assembly file doesn't exist: " + pdb);
+            }
+
+            using (var asm = AssemblyDefinition.ReadAssembly (filename)) {
 
 				using (var stream = File.OpenRead (pdb)) {
 					if (IsPortablePdb (stream))
 						throw new PortablePdbNotSupportedException ();
 
 					var funcs = PdbFile.LoadFunctions (stream, true);
-					Converter.Convert (asm, funcs, new MonoSymbolWriter (filename));
+					Converter.Convert (asm, funcs, new MonoSymbolWriter (filename), windowsRootFolder, linuxRootFolder);
 				}
 			}
 		}
@@ -64,11 +74,11 @@ namespace Pdb2Mdb {
 			this.mdb = mdb;
 		}
 
-		internal static void Convert (AssemblyDefinition assembly, IEnumerable<PdbFunction> functions, MonoSymbolWriter mdb)
+		internal static void Convert (AssemblyDefinition assembly, IEnumerable<PdbFunction> functions, MonoSymbolWriter mdb, string windowsRootFolder, string linuxRootFolder)
 		{
-			var converter = new Converter (mdb);
+            var converter = new Converter(mdb) { linuxRootFolder = linuxRootFolder, windowsRootFolder = windowsRootFolder };
 
-			foreach (var function in functions)
+            foreach (var function in functions)
 				converter.ConvertFunction (function);
 
 			mdb.WriteSymbolFile (assembly.MainModule.Mvid);
@@ -136,6 +146,11 @@ namespace Pdb2Mdb {
 		SourceFile GetSourceFile (MonoSymbolWriter mdb, PdbFunction function)
 		{
 			var name = (from l in function.lines where l.file != null select l.file.name).First ();
+            if (name.IndexOf(windowsRootFolder, StringComparison.CurrentCultureIgnoreCase) == 0)
+            {
+                name = name.Replace(@"\", "/");
+                name = $"{linuxRootFolder}{name.Substring(windowsRootFolder.Length)}";
+            }
 
 			SourceFile file;
 			if (files.TryGetValue (name, out file))
@@ -185,41 +200,63 @@ namespace Pdb2Mdb {
 
 		static void Main (string [] args)
 		{
-			if (args.Length != 1)
-				Usage ();
+            if (args.Length != 3)
+            {
+                Console.WriteLine("Invalid arguments.");
+                Usage();
+                return;
+            }
 
-			var asm = args [0];
+            string[] pdb = { };
+            if (Directory.Exists(args[0]))
+            {
+                pdb = new DirectoryInfo(args[0]).GetFiles("*.pdb").Select(f => f.FullName).ToArray();
+            }
+            else
+            {
+                if (!File.Exists(args[0]))
+                {
+                    Console.WriteLine($"{args[0]} not exists.");
+                    Usage();
+                    return;
+                }
+                else
+                {
+                    pdb = new []{ args[0] };
+                }
+            }
 
-			if (!File.Exists (asm))
-				Usage ();
-
-			try {
-				Converter.Convert (asm);
-			} catch (FileNotFoundException ex) {
-				Usage ();
-			} catch (PortablePdbNotSupportedException) {
+            try {
+                foreach (var file in pdb)
+                {
+                    Converter.Convert(file, args[1], args[2]);
+                }
+            }
+            catch (FileNotFoundException ex) {
+                Console.WriteLine($"{ex}");
+                Usage();
+                return;
+            }
+            catch (PortablePdbNotSupportedException) {
 				Console.WriteLine ("Error: A portable PDB can't be converted to mdb.");
-				Environment.Exit (2);
-			}
-			catch (Exception ex) {
+                return;
+            }
+            catch (Exception ex) {
 				Error (ex);
-			}
-		}
+                return;
+            }
+        }
 
 		static void Usage ()
 		{
-			Console.WriteLine ("Mono pdb to mdb debug symbol store converter");
-			Console.WriteLine ("Usage: pdb2mdb assembly");
+            Console.WriteLine("Usage: MdbConverter pdb-file WindowsRootFolder LinuxRootFolder");
+            Console.WriteLine("Usage: MdbConverter FolderWithPdb WindowsRootFolder LinuxRootFolder");
+        }
 
-			Environment.Exit (1);
-		}
-
-		static void Error (Exception e)
+        static void Error (Exception e)
 		{
 			Console.WriteLine ("Fatal error:");
 			Console.WriteLine (e);
-
-			Environment.Exit (1);
 		}
 	}
 }
